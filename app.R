@@ -1,8 +1,8 @@
 
-
 library(shiny)
-
-
+library(dplyr)
+library(ggplot2)
+library(tidytext)
 
 listings <- read.csv("listings.csv",header=TRUE)
 listings$description <- gsub("[^0-9A-Za-z ]", "" , listings$description,ignore.case = TRUE)
