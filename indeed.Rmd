@@ -1,0 +1,269 @@
+---
+title: "Final Project Indeed"
+author: "Maggie Sha"
+date: "12/13/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rvest)
+library(tidyverse)
+library(data.table)
+library(DT)
+library(magrittr)
+library(digest)
+library(RPostgreSQL)
+library(tidytext)
+library(config)
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+library(RCurl)
+library(XML)
+library(stringr)
+library(zoo)
+
+library(knitr)
+library(wordcloud)
+```
+
+# Introduction
+
+This is a practice of text mining by R. 
+
+An interactive shinyapp is also created.
+
+The main question is to find how companies describe the data science jobs when they post these job positions.
+
+Other questions: 
+                  
+                  * Are the descriptive words different from various geographical areas?
+                  * What are the commonly used Job titles for data science positions?
+                  * Are the top descriptive words on different job boards also different?
+            
+
+Data comes from Indeed job board and Github Jobs. 
+
+See:
+
+* https://www.indeed.com/hire
+* https://jobs.github.com/api
+
+```{r, echo=FALSE, eval = FALSE}
+listings <- data.frame(title=character(),
+                       company=character(), 
+                       location=character(), 
+                       summary=character(), 
+                       link=character(), 
+                       description = character(),
+                       stringsAsFactors=FALSE) 
+
+
+
+for (i in seq(0, 1000, 10)){
+  url_ds <- paste0('https://www.indeed.com/jobs?q=data+scientist%2C+statistics&start=',i)
+  var <- read_html(url_ds)
+
+  
+  #job title
+  title <-  var %>% 
+    html_nodes('#resultsCol .jobtitle') %>%
+    html_text() %>%
+    str_extract("(\\w+.+)+") 
+  
+  #company
+  company <- var %>% 
+    html_nodes('#resultsCol .company') %>%
+    html_text() %>%
+    str_extract("(\\w+).+") 
+  
+  #location
+  location <- var %>%
+    html_nodes('#resultsCol .location') %>%
+    html_text() %>%
+    str_extract("(\\w+.)+,.[A-Z]{2}")   
+  #summary
+  summary <- var %>%
+    html_nodes('#resultsCol .summary') %>%
+    html_text() %>%
+    str_extract(".+")
+  
+  #link
+  link <- var %>%
+    html_nodes('#resultsCol .jobtitle .turnstileLink, #resultsCol a.jobtitle') %>%
+    html_attr('href') 
+  link <- paste0("https://www.indeed.com",link)
+  
+  listings <- rbind(listings, as.data.frame(cbind(title,
+                                                  company,
+                                                  location,
+                                                  summary,
+                                                  link)))
+}
+
+
+```
+
+
+```{r, echo=FALSE,eval = FALSE}
+listings$uniqueid <- mapply(function(x, y, z) digest(paste0(x,y,z)), listings$title, listings$location, listings$company)
+
+#remove duplicate unique ids
+listings %<>%
+  distinct(uniqueid, .keep_all = TRUE)
+
+#remove duplicate links
+listings %<>%
+  distinct(link, .keep_all = TRUE)
+
+
+for (i in (1:length(listings$link))){
+  desciption <- tryCatch(
+    html_text(html_node(read_html(as.character(listings$link[i])),'.jobsearch-JobComponent-description')),
+    error=function(e){NA}
+  )
+  if (is.null(desciption)){
+    desc <- NA
+  }
+  listings$description[i] <- desciption
+}
+
+
+
+datatable(listings)
+
+# Save as csv for later use
+# write.csv(listings,"D:\\MA615\\listings.csv",row.names=TRUE)
+```
+
+# Indeed Data
+```{r,echo=FALSE}
+# read the csv saved from the previous part
+listings <- read.csv("listings.csv")
+listings$description <- gsub("[^0-9A-Za-z ]", "" , listings$description,ignore.case = TRUE)
+head(listings,n=2)
+```
+
+```{r,echo=FALSE}
+
+# function to return the words and word counts in description
+f <- function(df){
+  text <- df$description
+  descript_df <- tibble(line = 1:nrow(df), text = text)
+
+  descript_df <- descript_df %>% unnest_tokens(word, text)
+
+  ##  Remove stop-words such as the, a, this, and that ...
+  data("stop_words")     
+
+  descript_df <- descript_df %>% anti_join(stop_words)
+
+  result <- descript_df %>%
+          count(word, sort = TRUE) %>%
+          mutate(word = reorder(word, n))
+  return(result)
+}
+```
+
+# Plot top description words 
+```{r,echo=FALSE}
+f(listings)[1:40,] %>% 
+  ggplot(aes(x = n, y = word, fill=word, label=n)) +
+  geom_col() +
+  labs(title = "Top 40 Hot words in job description", x = "Word Count", y = "Word")
+
+```
+
+```{r,echo=FALSE}
+f(listings)[41:61,]%>% 
+  ggplot(aes(x = n, y = word, fill = word, labels = n)) +
+  geom_bar(stat="identity", show.legend = FALSE) +
+  labs(title = "No.41 - No.61 Hot words in job description", x = "Word Count", y = "Word") + 
+  geom_label(aes(fill = word, label = n),colour = "white", fontface = "bold", show.legend = FALSE)
+```
+
+There are many words we can include in our resume or to describe our skills, such as machine learning, python, communication...
+
+
+# Comparison of top words in the west and the east
+```{r, echo=FALSE}
+# define cities in WA and CA as west, cities in MA, NY, and FL as east
+west <- c(" WA"," CA")
+east <- c(" MA"," NY"," FL")
+
+# find their index
+W <- integer()
+E <- integer()
+for(i in 1:nrow(listings)){
+  location <- unlist(strsplit(listings$location[i], ","))[2]
+  if (location %in% west){
+    W <- rbind(W,cbind(i))
+  } else if (location %in% east){
+    E <- rbind(E,cbind(i))
+  }
+  
+}
+
+# separate city in west side and east side
+west_city <- data.frame()
+east_city <- data.frame()
+for(i in W){
+  west_city <- rbind(west_city,as.data.frame(cbind(listings[i,])))
+}
+
+for(i in E){
+  east_city <- rbind(east_city,as.data.frame(cbind(listings[i,])))
+}
+
+```
+
+
+
+```{r}
+f(west_city)[1:50,] %>% 
+  ggplot(aes(x = n, y = word, fill=word, label=n)) +
+  geom_col() +
+  labs(title = "West Coast Top50 hot words", x = "Word Count", y = "Word")
+```
+
+```{r}
+f(east_city)[1:50,] %>% 
+  ggplot(aes(x = n, y = word, fill=word, label=n)) +
+  geom_col() +
+  labs(title = "East Coast Top50 hot words", x = "Word Count", y = "Word")
+```
+
+The leading words are very similar in the west and the east. However, I found some interesting difference, such as 'financial' is a trending word in th east while "engineering" is hot in the west. In the west it shows "SQL" is also a hot word, so we can consider describe our SQL skills.
+
+
+# Common used Job titles
+```{r,echo=FALSE}
+title_count <- listings %>%
+          count(title, sort = TRUE)
+
+wordcloud(words = title_count$title, freq = title_count$n, min.freq = 2,
+          random.order = FALSE, colors=brewer.pal(8,"Set1"))
+```
+For the data scientist position, many companies choose to call it Data Scientist directly. Many companies also call it Data Analyst, some other titles are Data Engineer, Budget Analyst...
+
+
+# Comparison of tops words on Github Jobs and Indeed
+
+### Github Data
+```{r,echo=FALSE}
+Github <- jsonlite::fromJSON("https://jobs.github.com/positions.json?description=data+science&location=", flatten=TRUE)
+Github$description <- gsub("<.*?>", "", Github$description)
+#write.csv(Github,"D:\\MA615\\github.csv",row.names=TRUE)
+head(Github, n=2)
+```
+
+```{r}
+f(Github)[1:50,] %>% 
+  ggplot(aes(x = n, y = word, fill=word, label=n)) +
+  geom_col() +
+  labs(title = "Github Top 50 hot words", x = "Word Count", y = "Word")
+```
+
+By comparison with Indeed, I found the job description on Github Jobs emphasize more on the software by the words such as "software" and "code". Also, it may contains many jobs in Amazon since those words "amazon" and "aws" are mentioned many times.
